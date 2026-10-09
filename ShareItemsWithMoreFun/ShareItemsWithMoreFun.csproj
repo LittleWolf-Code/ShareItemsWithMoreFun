@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>ShareItemsWithMoreFun</AssemblyName>
+    <RootNamespace>ShareItemsWithMoreFun</RootNamespace>
+    <Version>0.1.0</Version>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <DebugType>portable</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!--
+    Le mod est compilé contre les DLL du jeu installé et contre le MMHOOK généré
+    par HookGenPatcher dans un profil du mod manager : ce sont les seules références
+    garanties à jour avec la version actuelle du jeu.
+    Surcharge possible dans ../Local.props ou en ligne de commande :
+      dotnet build -p:RoR2Dir="..." -p:ProfileDir="..." -p:DeployDir="..."
+  -->
+  <Import Project="..\Local.props" Condition="Exists('..\Local.props')" />
+
+  <PropertyGroup>
+    <RoR2Dir Condition="'$(RoR2Dir)' == ''">E:\steam\steamapps\common\Risk of Rain 2</RoR2Dir>
+    <ProfileDir Condition="'$(ProfileDir)' == ''">$(APPDATA)\Thunderstore Mod Manager\DataFolder\RiskOfRain2\profiles\SOFIQN</ProfileDir>
+    <ManagedDir>$(RoR2Dir)\Risk of Rain 2_Data\Managed\</ManagedDir>
+    <BepInExDir>$(ProfileDir)\BepInEx\</BepInExDir>
+    <PluginsDir>$(BepInExDir)plugins\</PluginsDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="$(ManagedDir)*.dll" Exclude="$(ManagedDir)mscorlib.dll;$(ManagedDir)netstandard.dll;$(ManagedDir)System*.dll;$(ManagedDir)Mono.Security.dll" Private="false" />
+    <Reference Include="$(BepInExDir)core\BepInEx.dll" Private="false" />
+    <Reference Include="$(BepInExDir)core\MonoMod.RuntimeDetour.dll" Private="false" />
+    <Reference Include="$(BepInExDir)core\MonoMod.Utils.dll" Private="false" />
+    <Reference Include="$(BepInExDir)core\Mono.Cecil.dll" Private="false" />
+    <Reference Include="$(PluginsDir)MMHOOK\MMHOOK_RoR2.dll" Private="false" />
+    <Reference Include="$(PluginsDir)RiskofThunder-R2API_Core\R2API.Core\R2API.Core.dll" Private="false" />
+    <Reference Include="$(PluginsDir)RiskofThunder-R2API_Networking\R2API.Networking\R2API.Networking.dll" Private="false" />
+    <Reference Include="$(PluginsDir)Rune580-Risk_Of_Options\RiskOfOptions\RiskOfOptions.dll" Private="false" />
+  </ItemGroup>
+
+  <!-- Copie la DLL dans un dossier de test (ex. BepInEx\plugins\ShareItemsWithMoreFun d'un profil dédié). -->
+  <Target Name="DeployToTestProfile" AfterTargets="Build" Condition="'$(DeployDir)' != ''">
+    <MakeDir Directories="$(DeployDir)" />
+    <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).pdb" DestinationFolder="$(DeployDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
