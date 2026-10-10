@@ -8,7 +8,9 @@ namespace ShareItemsWithMoreFun
 {
     /// <summary>
     /// Nos messages passent par un autre canal que l'apparition des objets : un message peut
-    /// arriver avant l'objet qu'il désigne. On le garde alors en attente quelques secondes.
+    /// arriver avant l'objet qu'il désigne. On le garde alors en attente, et les messages en
+    /// attente sont rejoués dans leur ordre d'arrivée (une libération ne doit pas être écrasée
+    /// par une attribution plus ancienne).
     /// </summary>
     internal static class NetworkLookups
     {
@@ -26,7 +28,8 @@ namespace ShareItemsWithMoreFun
         public static void WhenFound(NetworkInstanceId id, Action<GameObject> action)
         {
             GameObject found = Util.FindNetworkObject(id);
-            if (found)
+            // Un message plus ancien pour le même objet attend encore : on passe derrière lui.
+            if (found && !pending.Exists(p => p.id == id))
             {
                 Run(action, found);
                 return;
@@ -40,19 +43,44 @@ namespace ShareItemsWithMoreFun
             {
                 return;
             }
-            for (int i = pending.Count - 1; i >= 0; i--)
+            if (NetworkClient.active && !ClientScene.ready)
             {
-                Pending entry = pending[i];
+                // Chargement d'étape en cours : le délai ne court qu'une fois le client prêt.
+                for (int i = 0; i < pending.Count; i++)
+                {
+                    Pending entry = pending[i];
+                    entry.expiresAt = Time.unscaledTime + TimeoutSeconds;
+                    pending[i] = entry;
+                }
+                return;
+            }
+
+            List<KeyValuePair<Pending, GameObject>> due = null;
+            int write = 0;
+            for (int read = 0; read < pending.Count; read++)
+            {
+                Pending entry = pending[read];
                 GameObject found = Util.FindNetworkObject(entry.id);
                 if (found)
                 {
-                    pending.RemoveAt(i);
-                    Run(entry.action, found);
+                    (due ??= new List<KeyValuePair<Pending, GameObject>>()).Add(new KeyValuePair<Pending, GameObject>(entry, found));
                 }
                 else if (Time.unscaledTime >= entry.expiresAt)
                 {
-                    pending.RemoveAt(i);
                     Plugin.Debug($"Objet réseau {entry.id} jamais trouvé, message ignoré");
+                }
+                else
+                {
+                    pending[write++] = entry;
+                }
+            }
+            pending.RemoveRange(write, pending.Count - write);
+
+            if (due != null)
+            {
+                foreach (KeyValuePair<Pending, GameObject> pair in due)
+                {
+                    Run(pair.Key.action, pair.Value);
                 }
             }
         }

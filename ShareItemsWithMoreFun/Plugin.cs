@@ -14,7 +14,7 @@ namespace ShareItemsWithMoreFun
     {
         public const string PluginGUID = "com.shareitemswithmorefun";
         public const string PluginName = "ShareItemsWithMoreFun";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "0.2.2";
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
@@ -27,13 +27,25 @@ namespace ShareItemsWithMoreFun
             ModConfig.Init(Config);
             OptionPickupPrefab.Load();
 
+            NetworkingAPI.RegisterMessageType<ChestManagedMessage>();
             NetworkingAPI.RegisterMessageType<ChestOpenedMessage>();
             NetworkingAPI.RegisterMessageType<OwnerMessage>();
+            NetworkingAPI.RegisterMessageType<DifficultyFreezeMessage>();
+            NetworkingAPI.RegisterMessageType<ShrineStateMessage>();
+            NetworkingAPI.RegisterMessageType<ChestMarkedMessage>();
 
             ChestHooks.Install();
             OrbHooks.Install();
             ClientHooks.Install();
             LateJoinSync.Install();
+            CompatHooks.Install();
+            PendingEquipment.Install();
+            StageEndHooks.Install();
+            ChestBalance.Install();
+            MultiShopHooks.Install();
+            BossRewards.Install();
+            ShrineHooks.Install();
+            ChestMarkers.Install();
 
             if (RiskOfOptionsCompat.Enabled)
             {
@@ -50,6 +62,7 @@ namespace ShareItemsWithMoreFun
         private void Update()
         {
             NetworkLookups.Tick();
+            ChestMarkers.Tick();
         }
 
         internal static void Debug(string message)

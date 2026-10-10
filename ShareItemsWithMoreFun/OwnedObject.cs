@@ -14,18 +14,24 @@ namespace ShareItemsWithMoreFun
         public static readonly HashSet<OwnedObject> Instances = new HashSet<OwnedObject>();
 
         private const float HideRefreshSeconds = 0.25f;
+        // Le modèle d'une orbe apparaît quelques images après elle : passage à chaque image au début.
+        private const float FastHideSeconds = 3f;
         private const float OwnerCheckSeconds = 1f;
 
         public NetworkInstanceId ownerId = NetworkInstanceId.Invalid;
         public bool reserve;
         public bool hide;
+        /// <summary>Le propriétaire peut l'ouvrir depuis un drone piloté (réglage de l'hôte).</summary>
+        public bool remoteOpAllowed;
 
         private CharacterMaster cachedOwner;
         private readonly List<Renderer> hiddenRenderers = new List<Renderer>();
         private readonly List<Light> hiddenLights = new List<Light>();
         private Highlight hiddenHighlight;
         private float nextHideRefresh;
+        private float fastHideUntil;
         private float nextOwnerCheck;
+        private float ownerMissingSince = -1f;
 
         public bool HasOwner => ownerId != NetworkInstanceId.Invalid;
 
@@ -59,12 +65,12 @@ namespace ShareItemsWithMoreFun
             return player && player.netId == owned.ownerId;
         }
 
-        public void SetOwnerServer(NetworkInstanceId owner, bool reserveForOwner, bool hideFromOthers)
+        public void SetOwnerServer(NetworkInstanceId owner, bool reserveForOwner, bool hideFromOthers, bool droneAllowed)
         {
-            Apply(owner, reserveForOwner, hideFromOthers);
+            Apply(owner, reserveForOwner, hideFromOthers, droneAllowed);
         }
 
-        public void Apply(NetworkInstanceId owner, bool reserveForOwner, bool hideFromOthers)
+        public void Apply(NetworkInstanceId owner, bool reserveForOwner, bool hideFromOthers, bool droneAllowed)
         {
             if (owner != ownerId)
             {
@@ -73,14 +79,21 @@ namespace ShareItemsWithMoreFun
             ownerId = owner;
             reserve = HasOwner && reserveForOwner;
             hide = HasOwner && hideFromOthers;
+            remoteOpAllowed = HasOwner && droneAllowed;
             nextHideRefresh = 0f;
-            if (!ShouldHideLocally())
+            fastHideUntil = Time.unscaledTime + FastHideSeconds;
+            ownerMissingSince = -1f;
+            if (ShouldHideLocally())
+            {
+                HideNow();
+            }
+            else
             {
                 ShowAgain();
             }
         }
 
-        private bool ShouldHideLocally()
+        public bool ShouldHideLocally()
         {
             return hide && HasOwner && LocalUserManager.readOnlyLocalUsersList.Count > 0 && !PlayerResolver.IsLocalPlayer(ownerId);
         }
@@ -103,23 +116,44 @@ namespace ShareItemsWithMoreFun
                 nextOwnerCheck = Time.unscaledTime + OwnerCheckSeconds;
                 CharacterMaster owner = OwnerMaster;
                 PlayerCharacterMasterController controller = owner ? owner.playerCharacterMasterController : null;
-                if (!controller || !controller.isConnected)
+                bool gone = !owner;
+                bool disconnected = controller && !controller.isConnected;
+                if (!gone && !disconnected)
                 {
-                    Plugin.Debug($"{name} libéré : propriétaire absent");
-                    Apply(NetworkInstanceId.Invalid, false, false);
-                    OwnerMessage.Broadcast(gameObject);
+                    ownerMissingSince = -1f;
+                }
+                else
+                {
+                    if (ownerMissingSince < 0f)
+                    {
+                        ownerMissingSince = Time.unscaledTime;
+                    }
+                    // Un joueur qui se reconnecte retrouve le même CharacterMaster : on lui laisse le temps de revenir.
+                    float grace = ModConfig.DisconnectGraceSeconds.Value;
+                    if (gone || (grace > 0f && Time.unscaledTime - ownerMissingSince >= grace))
+                    {
+                        Plugin.Debug($"{name} libéré : propriétaire absent");
+                        Apply(NetworkInstanceId.Invalid, false, false, false);
+                        OwnerMessage.Broadcast(gameObject);
+                    }
                 }
             }
         }
 
         private void LateUpdate()
         {
-            if (Time.unscaledTime < nextHideRefresh || !ShouldHideLocally())
+            float now = Time.unscaledTime;
+            if ((now < nextHideRefresh && now >= fastHideUntil) || !ShouldHideLocally())
             {
                 return;
             }
             // Le modèle de l'orbe est chargé de façon asynchrone : on repasse régulièrement.
-            nextHideRefresh = Time.unscaledTime + HideRefreshSeconds;
+            nextHideRefresh = now + HideRefreshSeconds;
+            HideNow();
+        }
+
+        private void HideNow()
+        {
             foreach (Renderer renderer in GetComponentsInChildren<Renderer>(true))
             {
                 if (renderer.enabled)

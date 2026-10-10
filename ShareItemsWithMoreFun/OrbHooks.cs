@@ -36,9 +36,25 @@ namespace ShareItemsWithMoreFun
                 && !CommandArtifactManager.IsCommandArtifactEnabled)
             {
                 // Avec l'Artefact du Commandement, on laisse le jeu créer son essence (toujours réservée).
-                ChoiceBuilder.TryConvert(ref pickupInfo, context.rng);
+                // En cas d'erreur, ce drop reste un item simple (toujours réservé) au lieu d'être perdu.
+                GenericPickupController.CreatePickupInfo converted = pickupInfo;
+                try
+                {
+                    if (ChoiceBuilder.TryConvert(ref converted, context.rng))
+                    {
+                        pickupInfo = converted;
+                    }
+                }
+                catch (System.Exception e)
+                {
+                    Plugin.Log.LogError($"Conversion en orbe impossible, item simple à la place : {e}");
+                }
             }
             orig(pickupInfo, position, velocity);
+            if (context != null)
+            {
+                context.dropletsCreated++;
+            }
         }
 
         private static void PickupDropletController_OnEnable(On.RoR2.PickupDropletController.orig_OnEnable orig, PickupDropletController self)
@@ -88,6 +104,11 @@ namespace ShareItemsWithMoreFun
         private static Interactability PickupPickerController_GetInteractability(On.RoR2.PickupPickerController.orig_GetInteractability orig, PickupPickerController self, Interactor activator)
         {
             Interactability result = orig(self, activator);
+            if (result == Interactability.Disabled && RemoteOperation.CanOpenOrb(self, activator))
+            {
+                // Le joueur mort qui pilote un drone peut ouvrir sa propre orbe.
+                result = RemoteOperation.EvaluateAsAllowed(self, activator, orig);
+            }
             if (result != Interactability.Disabled && !OwnedObject.Allows(self.gameObject, PlayerResolver.FromInteractor(activator)))
             {
                 return Interactability.Disabled;
@@ -120,9 +141,20 @@ namespace ShareItemsWithMoreFun
         private static void PickupPickerController_HandlePickupSelected(On.RoR2.PickupPickerController.orig_HandlePickupSelected orig, PickupPickerController self, int choiceIndex)
         {
             OwnedObject owned = NetworkServer.active ? self.GetComponent<OwnedObject>() : null;
-            if (!owned || !owned.HasOwner || !ModConfig.GrantToInventory.Value)
+            if (!owned || !owned.HasOwner)
             {
                 orig(self, choiceIndex);
+                return;
+            }
+            NetworkUIPromptController prompt = self.GetComponent<NetworkUIPromptController>();
+            CharacterMaster participant = prompt ? prompt.currentParticipantMaster : null;
+            CharacterBody participantBody = participant ? participant.GetBody() : null;
+
+            // Un joueur mort aux commandes d'un drone ne peut pas tout ramasser au sol : il reçoit toujours en direct.
+            if (!ModConfig.GrantToInventory.Value && !(participantBody && participantBody.isRemoteOp))
+            {
+                // L'item choisi tombe au sol, mais reste à son propriétaire (réservé, caché aux autres).
+                OrigWithOwner(orig, self, choiceIndex, owned.OwnerMaster);
                 return;
             }
 
@@ -136,23 +168,29 @@ namespace ShareItemsWithMoreFun
                 return;
             }
 
-            NetworkUIPromptController prompt = self.GetComponent<NetworkUIPromptController>();
-            CharacterMaster participant = prompt ? prompt.currentParticipantMaster : null;
             if (!participant || !OwnedObject.Allows(self.gameObject, PlayerResolver.FromMaster(participant)))
             {
                 return;
             }
 
-            CharacterMaster dropOwner = owned.OwnerMaster ? owned.OwnerMaster : participant;
-            if (!Grant.ToMaster(participant, option.pickup, self.transform.position, dropOwner))
+            if (!Grant.ToMaster(participant, option.pickup, self.transform.position))
             {
-                orig(self, choiceIndex);
+                OrigWithOwner(orig, self, choiceIndex, participant);
                 return;
             }
 
             Plugin.Debug($"{participant.name} choisit {option.pickup.pickupIndex}");
             prompt.SetParticipantMaster(null);
             NetworkServer.Destroy(self.gameObject);
+        }
+
+        /// <summary>Choix vanilla (item posé au sol), dans un contexte qui le réserve au joueur.</summary>
+        private static void OrigWithOwner(On.RoR2.PickupPickerController.orig_HandlePickupSelected orig, PickupPickerController self, int choiceIndex, CharacterMaster owner)
+        {
+            using (DropContext.Begin(owner, convertToChoices: false, rng: null))
+            {
+                orig(self, choiceIndex);
+            }
         }
     }
 }

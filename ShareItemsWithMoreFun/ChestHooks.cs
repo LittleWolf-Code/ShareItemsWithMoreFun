@@ -80,7 +80,7 @@ namespace ShareItemsWithMoreFun
                 && ModConfig.IsManagedChestName(chestObject.name);
         }
 
-        private static ManagedChest Setup(GameObject chestObject, bool instanced)
+        internal static ManagedChest Setup(GameObject chestObject, bool instanced)
         {
             PurchaseInteraction purchase = chestObject.GetComponent<PurchaseInteraction>();
             if (!purchase)
@@ -90,9 +90,15 @@ namespace ShareItemsWithMoreFun
             ManagedChest managed = ManagedChest.GetOrAdd(chestObject);
             managed.serverManaged = true;
             managed.instanced = instanced;
+            managed.remoteOpAllowed = instanced && ModConfig.RemoteOpCanOpenChests.Value;
             managed.purchase = purchase;
             managed.rng = new Xoroshiro128Plus(Run.instance.treasureRng.nextUlong);
             Plugin.Debug($"Coffre géré : {chestObject.name} (instancié : {instanced})");
+            if (instanced)
+            {
+                // Les clients doivent savoir quels coffres l'hôte instancie (invite du drone piloté).
+                ChestManagedMessage.For(managed)?.Send(NetworkDestination.Clients);
+            }
             return managed;
         }
 
@@ -118,6 +124,12 @@ namespace ShareItemsWithMoreFun
                 return;
             }
 
+            if (managed.shrine)
+            {
+                ShrineHooks.Purchase(managed, player, self, activator, orig);
+                return;
+            }
+
             if (managed.chest)
             {
                 // L'Étoile des soldes d'un joueur précédent ne doit pas profiter à celui-ci.
@@ -126,9 +138,21 @@ namespace ShareItemsWithMoreFun
 
             managed.purchaseInProgress = true;
             managed.purchaseSucceeded = false;
+            managed.keepShopOpen = false;
             try
             {
-                orig(self, activator);
+                if (managed.isShopTerminal)
+                {
+                    // Le terminal lâche son item pendant l'achat (écouteur du prefab) : il revient à l'acheteur.
+                    using (DropContext.Begin(player, convertToChoices: false, rng: null))
+                    {
+                        orig(self, activator);
+                    }
+                }
+                else
+                {
+                    orig(self, activator);
+                }
             }
             finally
             {
@@ -140,6 +164,12 @@ namespace ShareItemsWithMoreFun
                 return;
             }
 
+            if (managed.isShopTerminal)
+            {
+                OnShopTerminalPurchased(managed, player);
+                return;
+            }
+
             int dropCount = managed.chest ? Math.Max(1, managed.chest.dropCount) : 1;
             if (managed.chest)
             {
@@ -147,10 +177,36 @@ namespace ShareItemsWithMoreFun
             }
 
             managed.MarkOpened(player.netId);
+            ChestMarkers.MarkServer(managed);
             Plugin.Debug($"{player.name} a ouvert {self.name} ({dropCount} drop(s))");
 
-            new ChestOpenedMessage(self.netId, player.netId, playOpening: true).Send(NetworkDestination.Clients);
+            new ChestOpenedMessage(self.netId, player.netId, ChestVisual.PlayOpening).Send(NetworkDestination.Clients);
             managed.StartCoroutine(DropAfterDelay(managed, player, dropCount));
+        }
+
+        /// <summary>Un achat ferme tout le multimagasin, mais seulement pour l'acheteur.</summary>
+        private static void OnShopTerminalPurchased(ManagedChest boughtTerminal, CharacterMaster player)
+        {
+            MultiShopController shop = boughtTerminal.shop;
+            Plugin.Debug($"{player.name} a acheté dans {(shop ? shop.name : boughtTerminal.name)}");
+            ChestMarkers.MarkServer(boughtTerminal);
+            // Carte de dirigeant : seul le terminal acheté se ferme, les autres restent achetables.
+            if (!shop || boughtTerminal.keepShopOpen)
+            {
+                boughtTerminal.MarkOpened(player.netId);
+                new ChestOpenedMessage(boughtTerminal.purchase.netId, player.netId, ChestVisual.PlayOpening).Send(NetworkDestination.Clients);
+                return;
+            }
+            foreach (GameObject terminal in shop.terminalGameObjectsList)
+            {
+                ManagedChest managed = terminal ? terminal.GetComponent<ManagedChest>() : null;
+                if (!managed || !managed.purchase || managed.HasOpened(player.netId))
+                {
+                    continue; // Déjà fermé pour ce joueur (Carte de dirigeant) : pas de second volet.
+                }
+                managed.MarkOpened(player.netId);
+                new ChestOpenedMessage(managed.purchase.netId, player.netId, ChestVisual.PlayOpening).Send(NetworkDestination.Clients);
+            }
         }
 
         private static void OnPurchaseGlobalServer(CostTypeDef.PayCostContext context, CostTypeDef.PayCostResults results)
@@ -170,6 +226,7 @@ namespace ShareItemsWithMoreFun
                 yield break;
             }
 
+            DropContext context = null;
             try
             {
                 if (managed.chest)
@@ -181,7 +238,7 @@ namespace ShareItemsWithMoreFun
                     }
                     chest.dropCount = dropCount;
                     managed.allowItemDrop = true;
-                    using (DropContext.Begin(owner, convertToChoices: true, managed.rng))
+                    using (context = DropContext.Begin(owner, convertToChoices: true, managed.rng))
                     {
                         chest.ItemDrop();
                     }
@@ -191,7 +248,7 @@ namespace ShareItemsWithMoreFun
                     // Chaque joueur reçoit son propre tirage d'options.
                     managed.optionChest.Roll();
                     managed.allowItemDrop = true;
-                    using (DropContext.Begin(owner, convertToChoices: false, managed.rng))
+                    using (context = DropContext.Begin(owner, convertToChoices: false, managed.rng))
                     {
                         managed.optionChest.ItemDrop();
                     }
@@ -200,6 +257,8 @@ namespace ShareItemsWithMoreFun
             catch (Exception e)
             {
                 Plugin.Log.LogError($"Échec du drop de {managed.name} : {e}");
+                int created = context != null ? context.dropletsCreated : 0;
+                DropPlainItemsAfterFailure(managed, owner, managed.chest ? dropCount - created : 1 - created);
             }
             finally
             {
@@ -214,6 +273,60 @@ namespace ShareItemsWithMoreFun
                         managed.chest.Roll();
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Le joueur a payé : en cas d'erreur, il reçoit ce qui manque sous forme de drops vanilla
+        /// (items simples, ou le Potentiel du Néant tel quel), toujours réservés à lui.
+        /// </summary>
+        private static void DropPlainItemsAfterFailure(ManagedChest managed, CharacterMaster owner, int missing)
+        {
+            if (missing <= 0)
+            {
+                return;
+            }
+            try
+            {
+                if (managed.optionChest)
+                {
+                    managed.allowItemDrop = true;
+                    using (DropContext.Begin(owner, convertToChoices: false, rng: null))
+                    {
+                        managed.optionChest.ItemDrop();
+                    }
+                    return;
+                }
+
+                ChestBehavior chest = managed.chest;
+                if (!chest || !chest.dropTransform)
+                {
+                    return;
+                }
+                Vector3 position = chest.dropTransform.position + Vector3.up * 1.5f;
+                Vector3 velocity = Vector3.up * chest.dropUpVelocityStrength + chest.dropTransform.forward * chest.dropForwardVelocityStrength;
+                Quaternion step = Quaternion.AngleAxis(360f / missing, Vector3.up);
+                using (DropContext.Begin(owner, convertToChoices: false, rng: null))
+                {
+                    for (int i = 0; i < missing; i++)
+                    {
+                        if (!chest.currentPickup.isValid)
+                        {
+                            chest.Roll();
+                        }
+                        if (!chest.currentPickup.isValid)
+                        {
+                            return;
+                        }
+                        PickupDropletController.CreatePickupDroplet(chest.currentPickup, position, velocity, false);
+                        velocity = step * velocity;
+                        chest.Roll();
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"Le drop de secours a aussi échoué : {e}");
             }
         }
 
@@ -317,12 +430,20 @@ namespace ShareItemsWithMoreFun
         private static Interactability PurchaseInteraction_GetInteractability(On.RoR2.PurchaseInteraction.orig_GetInteractability orig, PurchaseInteraction self, Interactor activator)
         {
             Interactability result = orig(self, activator);
+            ManagedChest managed = self.GetComponent<ManagedChest>();
+            if (result == Interactability.Disabled && RemoteOperation.CanOpenChest(self, managed, activator))
+            {
+                result = RemoteOperation.EvaluateAsAllowed(self, activator, orig);
+            }
             if (result == Interactability.Disabled)
             {
                 return result;
             }
-            ManagedChest managed = self.GetComponent<ManagedChest>();
             if (managed && managed.IsInstancedFor(activator, out bool alreadyOpened) && alreadyOpened)
+            {
+                return Interactability.Disabled;
+            }
+            if (managed && managed.IsShrineCoolingDown(PlayerResolver.FromInteractor(activator)))
             {
                 return Interactability.Disabled;
             }

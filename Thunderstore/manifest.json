@@ -1,0 +1,12 @@
+{
+  "name": "ShareItemsWithMoreFun",
+  "version_number": "0.2.2",
+  "website_url": "",
+  "description": "Chests and Shrines of Chance work per player and drop 3-item choice orbs of the same rarity. Once the teleporter is charged, difficulty stops rising and dead players come back. Multiplayer: everyone needs the mod.",
+  "dependencies": [
+    "bbepis-BepInExPack-5.4.2122",
+    "RiskofThunder-HookGenPatcher-1.2.9",
+    "RiskofThunder-R2API_Core-5.3.0",
+    "RiskofThunder-R2API_Networking-1.0.4"
+  ]
+}

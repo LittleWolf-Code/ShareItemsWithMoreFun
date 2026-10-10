@@ -128,7 +128,7 @@ namespace ShareItemsWithMoreFun
                     {
                         continue;
                     }
-                    if (!AllowsStorageFlags(def, rolled))
+                    if (!AllowsStorageFlags(def, rolled) || !SameSpecialTags(def, rolled))
                     {
                         continue;
                     }
@@ -159,6 +159,33 @@ namespace ShareItemsWithMoreFun
             yield return (run.availableCursedTierDropList, b ? t.cursedWeight : 1f);
             yield return (run.availableHexTierDropList, b ? t.hexWeight : 1f);
             yield return (run.availablePageTierDropList, b ? t.pageWeight : 1f);
+        }
+
+        private static readonly ItemTag[] SpecialTags = { ItemTag.PowerShape, ItemTag.ObjectiveRelated, ItemTag.WorldUnique };
+
+        /// <summary>
+        /// Les objets de quête ou uniques (Formes de puissance du DLC3, objets d'objectif...) ne sont
+        /// proposés que si l'item tiré en est un lui-même : un objet de boss n'offre jamais de clé de quête.
+        /// </summary>
+        private static bool SameSpecialTags(PickupDef candidate, UniquePickup rolled)
+        {
+            if (candidate.itemIndex == ItemIndex.None)
+            {
+                return true;
+            }
+            PickupDef rolledDef = PickupCatalog.GetPickupDef(rolled.pickupIndex);
+            ItemDef candidateItem = ItemCatalog.GetItemDef(candidate.itemIndex);
+            ItemDef rolledItem = rolledDef != null && rolledDef.itemIndex != ItemIndex.None ? ItemCatalog.GetItemDef(rolledDef.itemIndex) : null;
+            foreach (ItemTag tag in SpecialTags)
+            {
+                bool candidateHas = candidateItem && candidateItem.ContainsTag(tag);
+                bool rolledHas = rolledItem && rolledItem.ContainsTag(tag);
+                if (candidateHas != rolledHas)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /// <summary>Un tirage temporaire ou de location ne propose que des items compatibles.</summary>

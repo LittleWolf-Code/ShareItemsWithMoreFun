@@ -19,6 +19,9 @@ namespace ShareItemsWithMoreFun
         public readonly bool convertToChoices;
         public readonly Xoroshiro128Plus rng;
 
+        /// <summary>Gouttelettes réellement créées dans ce contexte (pour le drop de secours).</summary>
+        public int dropletsCreated;
+
         private readonly DropContext previous;
         private readonly List<GameObject> tagged = new List<GameObject>();
 
@@ -43,7 +46,7 @@ namespace ShareItemsWithMoreFun
                 return;
             }
             OwnedObject owned = OwnedObject.GetOrAdd(gameObject);
-            owned.SetOwnerServer(owner.netId, ModConfig.ReserveOrbs.Value, ModConfig.HideOtherPlayersOrbs.Value);
+            owned.SetOwnerServer(owner.netId, ModConfig.ReserveOrbs.Value, ModConfig.HideOtherPlayersOrbs.Value, ModConfig.RemoteOpCanOpenChests.Value);
             tagged.Add(gameObject);
         }
 
@@ -52,9 +55,17 @@ namespace ShareItemsWithMoreFun
             Current = previous;
             foreach (GameObject gameObject in tagged)
             {
-                if (gameObject)
+                if (!gameObject)
+                {
+                    continue;
+                }
+                try
                 {
                     OwnerMessage.Broadcast(gameObject);
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogError(e);
                 }
             }
             tagged.Clear();
